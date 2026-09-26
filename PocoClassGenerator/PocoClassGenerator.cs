@@ -116,11 +116,14 @@ public static partial class PocoClassGenerator
 			builder.AppendLine("	{");
 		}
 
-		// Get Unique Columns
-		var uniqueColumns = new List<string>();
+		// Get Unique Columns grouped by unique index.
+		// هر ایندکس یکتای مجزا باید batch number جدا بگیرد؛ وگرنه همه ستون‌ها در یک گروه
+		// مرکب دیده می‌شوند (باگ: دو قید تک‌ستونه مستقل مثل کد و نام فروشنده یک قید مرکب می‌شدند).
+		var uniqueColumns = new List<Tuple<string, string>>();
 		if (generatorBehavior.HasFlag(GeneratorBehavior.DapperContribExtended))
 		{
 			string sqlUniqueColumns = $@"SELECT 
+									     IndexName = ind.name,
 									     ColumnName = col.name
 									FROM 
 									     sys.indexes ind 
@@ -133,13 +136,16 @@ public static partial class PocoClassGenerator
 									WHERE 
 									     ind.is_primary_key = 0 
 									     AND ind.is_unique = 1
-										 And t.name = '{tableName}'";
+									     AND ic.is_included_column = 0
+										 And t.name = '{tableName}'
+									ORDER BY ind.name, ic.key_ordinal";
 
 			using var command = connection.CreateCommand(sqlUniqueColumns);
 			using var reader = command.ExecuteReader();
 			while (reader.Read())
-				uniqueColumns.Add(reader.GetString(0));
+				uniqueColumns.Add(Tuple.Create(reader.GetString(0), reader.GetString(1)));
 		}
+		var uniqueIndexNames = uniqueColumns.Select(u => u.Item1).Distinct().ToList();
 		
 		// Get default Columns
 		var defaultColumns = new List<Tuple<string, string>>();
@@ -243,8 +249,14 @@ public static partial class PocoClassGenerator
 
 					if (generatorBehavior.HasFlag(GeneratorBehavior.DapperContribExtended) && !isFromMultiTables)
 					{
-						if (uniqueColumns.Contains(collumnName))
-							builder.AppendLine("		[UniqueConstraint]");
+						var uniqueEntry = uniqueColumns.FirstOrDefault(u => u.Item2 == collumnName);
+						if (uniqueEntry != null)
+						{
+							if (uniqueIndexNames.Count > 1)
+								builder.AppendLine($"		[UniqueConstraint({uniqueIndexNames.IndexOf(uniqueEntry.Item1) + 1})]");
+							else
+								builder.AppendLine("		[UniqueConstraint]");
+						}
 						
 						if (!allowDbNull && !(key || computed) && string.IsNullOrEmpty(defaultValue))
 							builder.AppendLine("		[System.ComponentModel.DataAnnotations.Required()]");
